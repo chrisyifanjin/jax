@@ -13,6 +13,13 @@ Remember to align the itemized text with the first line of an item within a list
 
 ## Unreleased
 
+* New features
+  * The Pallas public API is now available as `jax.pallas`
+    (`from jax import pallas as pl`), with backend-specific APIs in
+    `jax.pallas.tpu`, `jax.pallas.tpu_sc`, `jax.pallas.mosaic_gpu`,
+    `jax.pallas.triton` and `jax.pallas.fuser`. The corresponding
+    `jax.experimental.pallas` modules remain available as aliases.
+
 ## Released with JAX 0.12.0 (October 19, 2026)
 
 * New features

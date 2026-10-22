@@ -12,27 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Triton-specific Pallas APIs."""
+"""Triton-specific Pallas APIs.
 
-from jax._src.pallas.primitives import dot as dot
-from jax._src.pallas.triton.core import CompilerParams as CompilerParams
-from jax._src.pallas.triton.pallas_call_registration import CUSTOM_CALL_TARGET_NAME as CUSTOM_CALL_TARGET_NAME
-from jax._src.pallas.triton.primitives import approx_tanh as approx_tanh
-from jax._src.pallas.triton.primitives import atomic_add as atomic_add
-from jax._src.pallas.triton.primitives import atomic_and as atomic_and
-from jax._src.pallas.triton.primitives import atomic_cas as atomic_cas
-from jax._src.pallas.triton.primitives import atomic_max as atomic_max
-from jax._src.pallas.triton.primitives import atomic_min as atomic_min
-from jax._src.pallas.triton.primitives import atomic_or as atomic_or
-from jax._src.pallas.triton.primitives import atomic_xchg as atomic_xchg
-from jax._src.pallas.triton.primitives import atomic_xor as atomic_xor
-from jax._src.pallas.triton.primitives import debug_barrier as debug_barrier
-from jax._src.pallas.triton.primitives import elementwise_inline_asm as elementwise_inline_asm
-from jax._src.pallas.triton.primitives import load as load
-from jax._src.pallas.triton.primitives import max_contiguous as max_contiguous
-from jax._src.pallas.triton.primitives import store as store
-from jax._src.pallas.triton.gpu_info import GpuVersion as GpuVersion
-from jax._src.pallas.triton.gpu_info import get_gpu_info as get_gpu_info
-from jax._src.pallas.triton.gpu_info import get_gpu_info_from_version as get_gpu_info_from_version
-from jax._src.pallas.triton.gpu_info import is_gpu_device as is_gpu_device
-from jax._src.pallas.triton.gpu_info import GpuInfo as GpuInfo
+This module is an alias of ``jax.pallas.triton``, which is the preferred import
+path.
+"""
+
+from jax.pallas.triton import *  # noqa: F403

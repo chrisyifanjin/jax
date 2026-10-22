@@ -16,11 +16,13 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import functools
+import importlib
 import itertools
 import math
 import os
 import re
 import sys
+import types
 
 from absl.testing import absltest
 from absl.testing import parameterized
@@ -3016,6 +3018,33 @@ class PallasDeviceIdTest(jtu.JaxTestCase):
 
     with self.assertRaises(ValueError):
       pallas_primitives.canonicalize_device_id({"x": 0, ("x",): 1})
+
+
+class PallasPublicModuleTest(jtu.JaxTestCase):
+
+  def test_import_jax_pallas(self):
+    from jax import pallas as pallas_from_jax  # pylint: disable=g-import-not-at-top
+    import jax.pallas as pallas_module  # pylint: disable=g-import-not-at-top
+
+    self.assertIs(pallas_from_jax, pallas_module)
+    self.assertIs(pallas_module.pallas_call, pl.pallas_call)
+    self.assertIs(pallas_module.BlockSpec, pl.BlockSpec)
+
+  @parameterized.parameters("", ".tpu", ".triton", ".mosaic_gpu")
+  def test_experimental_module_is_alias(self, submodule):
+    if submodule and sys.platform == "win32":
+      self.skipTest("Backend-specific Pallas modules are not available.")
+    new = importlib.import_module("jax.pallas" + submodule)
+    old = importlib.import_module("jax.experimental.pallas" + submodule)
+    names = [
+        name for name, value in vars(new).items()
+        if not name.startswith("_") and not isinstance(value, types.ModuleType)
+    ]
+    self.assertNotEmpty(names)
+    for name in names:
+      self.assertIs(getattr(old, name), getattr(new, name), msg=name)
+    if hasattr(new, "_deprecations"):
+      self.assertIs(old._deprecations, new._deprecations)
 
 
 if __name__ == "__main__":
