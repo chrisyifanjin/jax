@@ -31,6 +31,7 @@ from jax._src import test_util as jtu
 from jax._src.lax import lax as lax_internal
 from jax._src.lib import jaxlib_extension_version
 from jax._src.scipy import special as special_internal
+from jax._src.third_party.scipy import betaln as betaln_internal
 from jax.scipy import special as lsp_special
 
 jax.config.parse_flags_with_absl()
@@ -1000,6 +1001,32 @@ class LaxScipySpecialFunctionsTest(jtu.JaxTestCase):
     }
     self.assertAllClose(jnp.array(hess), expected, atol=tol, rtol=tol)
 
+  @jtu.sample_product(dtype=float_dtypes)
+  def testBetalnInf(self, dtype):
+    # Regression test for https://github.com/jax-ml/jax/issues/39106
+    finite = [0.0, -0.0, 0.25, 2.0, 10.0, -0.5, -1.0]
+    a = np.array([0.0] + finite + [np.inf] * (len(finite) + 1), dtype=dtype)
+    b = np.array([0.0] + [np.inf] * len(finite) + finite + [np.inf], dtype=dtype)
+    args_maker = lambda: (a, b)
+    self._CheckAgainstNumpy(
+        osp_special.betaln, lsp_special.betaln, args_maker, check_dtypes=False
+    )
+    self._CompileAndCheck(lsp_special.betaln, args_maker)
+    with jax.debug_nans(True):
+      self._CheckAgainstNumpy(
+          osp_special.betaln,
+          lsp_special.betaln,
+          lambda: (a[:-1], b[:-1]),
+          check_dtypes=False,
+      )
+      jtu.check_grads(
+          betaln_internal.algdiv,
+          (dtype(0.0), dtype(10.0)),
+          order=1,
+          atol=1e-2,
+          rtol=1e-2,
+      )
+
   def test_gammaln_exact_zeros_and_special_values(self):
     # Exact zeros at x = 1.0 and x = 2.0
     self.assertEqual(float(lsp_special.gammaln(np.float32(1.0))), 0.0)
@@ -1283,6 +1310,42 @@ class LaxScipySpecialFunctionsTest(jtu.JaxTestCase):
     self.assertLessEqual(
         max_root_ulp, 2.0,
         f"Max ULP {max_root_ulp} at negative root x={worst_root_x} exceeds 2.0")
+
+  @jtu.sample_product(dtype=float_dtypes)
+  def testBetalnNegativeIntegers(self, dtype):
+    # Regression test for https://github.com/jax-ml/jax/issues/38243
+    pairs = [
+        (-1.0, 1.0),
+        (-2.0, 1.0),
+        (-2.0, 2.0),
+        (-3.0, 1.0),
+        (-3.0, 2.0),
+        (-3.0, 3.0),
+        (-4.0, 1.0),
+        (-4.0, 4.0),
+        (-10.0, 5.0),
+        (-10.0, 9.0),
+        (-10.0, 10.0),
+        (1.0, -1.0),
+        (2.0, -3.0),
+        (9.0, -10.0),
+        (-1.0, 2.0),
+        (-2.0, 3.0),
+    ]
+    a = np.array([p[0] for p in pairs], dtype=dtype)
+    b = np.array([p[1] for p in pairs], dtype=dtype)
+    args_maker = lambda: (a, b)
+    tol = 1e-3 if jtu.test_device_matches(["tpu"]) else 1e-5
+    with jax.debug_nans(True):
+      self._CheckAgainstNumpy(
+          osp_special.betaln,
+          lsp_special.betaln,
+          args_maker,
+          check_dtypes=False,
+          atol=tol,
+          rtol=tol,
+      )
+    self._CompileAndCheck(lsp_special.betaln, args_maker)
 
 
 if __name__ == "__main__":
