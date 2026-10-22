@@ -29,7 +29,6 @@ import dataclasses
 import enum
 import functools
 import threading
-import types
 from typing import Any, Protocol, cast
 
 import jax
@@ -86,10 +85,6 @@ class BlockIndexTransform:
     return dataclasses.replace(self, **kwargs)
 
 
-NoBlockIndexTransform = types.NoneType
-no_block_index_transform = None
-
-
 def _select_block_indices(i):
   def block_transform(*block_indices):
     return block_indices[i]
@@ -98,7 +93,7 @@ def _select_block_indices(i):
 
 def _init_block_transforms(
     block_specs: tuple[pallas_core.BlockSpec, ...],
-) -> tuple[BlockIndexTransform | NoBlockIndexTransform, ...]:
+) -> tuple[BlockIndexTransform | None, ...]:
   out = []
 
   equivalent_bs_argnums = []
@@ -112,7 +107,7 @@ def _init_block_transforms(
 
   for i, bs in enumerate(block_specs):
     if bs is pallas_core.no_block_spec:
-      out.append(no_block_index_transform)
+      out.append(None)
     else:
       out.append(
           BlockIndexTransform(
@@ -129,7 +124,7 @@ def _init_block_transforms(
 
 def _apply_block_transform(
     block_specs: tuple[pallas_core.BlockSpec, ...],
-    block_index_transform: BlockIndexTransform | NoBlockIndexTransform,
+    block_index_transform: BlockIndexTransform | None,
 ) -> pallas_core.BlockSpec | pallas_core.NoBlockSpec:
 
   def make_new_idx_map(block_index_transform):
@@ -147,7 +142,7 @@ def _apply_block_transform(
 
     return new_idx_map
 
-  if block_index_transform is no_block_index_transform:
+  if block_index_transform is None:
     return pallas_core.no_block_spec
   valid_block_specs = [
       bs for bs in block_specs if bs is not pallas_core.no_block_spec
@@ -166,10 +161,10 @@ class PullRuleContext:
   prim: core.Primitive
   avals_in: tuple[ShapedAbstractValue, ...]
   avals_out: tuple[ShapedAbstractValue, ...]
+  invars: tuple[core.Atom, ...]
   out_usages: tuple[set[Usage], ...]
   scalar_prefetch_fn: Any = dataclasses.field(default=None, init=False)
   strict_mode: bool = True
-  invars: tuple[core.Atom, ...] | None = None
 
 
 @dataclasses.dataclass
@@ -177,7 +172,7 @@ class PushRuleContext:
   prim: core.Primitive
   avals_in: tuple[ShapedAbstractValue, ...]
   avals_out: tuple[ShapedAbstractValue, ...]
-  invars: tuple[core.Atom, ...] | None = None
+  invars: tuple[core.Atom, ...]
   scalar_prefetch_fn: Any = dataclasses.field(default=None, init=False)
   strict_mode: bool = True
 
@@ -283,16 +278,14 @@ def _nested_call_usage_env(jaxpr: core.Jaxpr, jaxpr_out_usages):
 class KernelEvalContext:
   prim: core.Primitive
   scalar_prefetch: Any | None
-  program_ids: tuple[int | jax.Array, ...] | None
-  avals_in: tuple[ShapedAbstractValue, ...] | None
-  avals_out: tuple[ShapedAbstractValue, ...] | None
+  program_ids: tuple[int | jax.Array, ...]
+  avals_in: tuple[ShapedAbstractValue, ...]
+  avals_out: tuple[ShapedAbstractValue, ...]
   in_block_specs: tuple[pallas_core.BlockSpec, ...]
   out_block_specs: tuple[pallas_core.BlockSpec, ...]
-  out_usages: tuple[set[Usage], ...] | None
+  out_usages: tuple[set[Usage], ...]
 
   def get_program_ids(self):
-    if self.program_ids is None:
-      raise ValueError('Program ids not available.')
     return self.program_ids
 
   def get_in_block_indices(self):
@@ -314,7 +307,7 @@ class KernelEvalContext:
       )
 
 
-_illegal = object()
+_illegal: Any = object()
 
 
 class _SpEnv(threading.local):
@@ -549,8 +542,8 @@ def _compare_index_transforms(
 
 
 def _block_transforms_equal(
-    bs1: BlockIndexTransform | NoBlockIndexTransform,
-    bs2: BlockIndexTransform | NoBlockIndexTransform,
+    bs1: BlockIndexTransform | None,
+    bs2: BlockIndexTransform | None,
     block_idxs_avals: tuple[tuple[ShapedAbstractValue, ...], ...],
     scalar_prefetch_avals: tuple[ShapedAbstractValue, ...] = (),
     strict_mode: bool = True,
@@ -597,20 +590,20 @@ def _select_scalar_prefetch(scalar_prefetch_handler, scalar_prefetch,
 
 def _pull_block_transform(
     jaxpr: core.Jaxpr,
-    out_block_transforms: tuple[BlockIndexTransform | NoBlockIndexTransform, ...],
+    out_block_transforms: tuple[BlockIndexTransform | None, ...],
     *,
     read_usage_env: Callable[[core.Var], set[Usage]],
     scalar_prefetch_handler: Callable = _identity_scalar_prefetch_handler,
     grid_len: int | None = None,
     strict_mode: bool = True,
 ) -> tuple[
-    tuple[BlockIndexTransform | NoBlockIndexTransform, ...],
+    tuple[BlockIndexTransform | None, ...],
     tuple[
-        dict[core.Var, BlockIndexTransform | NoBlockIndexTransform],
+        dict[core.Var, BlockIndexTransform | None],
         dict[int, Any],
     ],
 ]:
-  env: dict[core.Var, BlockIndexTransform | NoBlockIndexTransform] = {}
+  env: dict[core.Var, BlockIndexTransform | None] = {}
   scalar_prefetch_fn_env = {}
   scalar_prefetch_avals = tuple(
       v.aval for v, sp in zip(
@@ -622,7 +615,7 @@ def _pull_block_transform(
 
   block_idxs_avals = tuple(
       None
-      if out_block_transform is no_block_index_transform
+      if out_block_transform is None
       else (
           (core.ShapedArray((), jnp.int32),) * len(out_block_transform.block_shape)
       )
@@ -635,14 +628,14 @@ def _pull_block_transform(
 
   def _read_block_spec(
       atom: core.Atom,
-  ) -> BlockIndexTransform | NoBlockIndexTransform:
+  ) -> BlockIndexTransform | None:
     if isinstance(atom, core.Literal):
-      return no_block_index_transform
-    return env.get(atom, no_block_index_transform)
+      return None
+    return env.get(atom, None)
 
   def _write_block_spec(
       atom: core.Atom,
-      block_transform: BlockIndexTransform | NoBlockIndexTransform,
+      block_transform: BlockIndexTransform | None,
   ):
     if isinstance(atom, core.Literal):
       return
@@ -650,7 +643,7 @@ def _pull_block_transform(
 
   for i, eqn in reversed(list(enumerate(jaxpr.eqns))):
     eqn_out_block_transforms = tuple(util.safe_map(_read_block_spec, eqn.outvars))
-    if all(bs is no_block_index_transform for bs in eqn_out_block_transforms):
+    if all(bs is None for bs in eqn_out_block_transforms):
       continue
     rule = pull_block_spec_rules.get(eqn.primitive, None)
     if not rule:
@@ -729,8 +722,8 @@ def _pull_block_transform(
       _write_block_spec(v, in_block_transform)
 
   def _get_in_block_transforms(v):
-    bs = env.get(v, no_block_index_transform)
-    if bs is not no_block_index_transform:
+    bs = env.get(v, None)
+    if bs is not None:
       if bs.block_shape is _illegal:
         raise ValueError(
             'Fusion contains a DAG, cannot uniquely pull '
@@ -1117,11 +1110,11 @@ class PullBlockSpecRuleFn(Protocol):
       ctx: PullRuleContext,
       block_spec: (
           BlockIndexTransform
-          | NoBlockIndexTransform
-          | tuple[BlockIndexTransform | NoBlockIndexTransform, ...]
+          | None
+          | tuple[BlockIndexTransform | None, ...]
       ),
       **params: Any,
-  ) -> Sequence[BlockIndexTransform | NoBlockIndexTransform]:
+  ) -> Sequence[BlockIndexTransform | None]:
     ...
 
 
@@ -1150,7 +1143,7 @@ def _eltwise_pull_rule(
     ctx: PullRuleContext,
     block_transform: BlockIndexTransform,
     **params,
-) -> Sequence[BlockIndexTransform | NoBlockIndexTransform]:
+) -> Sequence[BlockIndexTransform | None]:
   del ctx, params
   return [block_transform]
 
@@ -1205,9 +1198,9 @@ def _binop_pull_rule(ctx: PullRuleContext, block_transform, **params):
   left_aval, right_aval = ctx.avals_in
 
   if not right_aval.shape:
-    return [block_transform, no_block_index_transform]
+    return [block_transform, None]
   if not left_aval.shape:
-    return [no_block_index_transform, block_transform]
+    return [None, block_transform]
   for i, (l, r) in enumerate(
       zip(left_aval.shape, right_aval.shape, strict=True)
   ):
@@ -1238,11 +1231,11 @@ def _select_n_eval_rule(ctx: KernelEvalContext, *args):
 @register_pull_block_spec_rule(lax.select_n_p)
 def _select_n_pull_block_spec_rule(
     ctx: PullRuleContext, block_transform: BlockIndexTransform,
-) -> Sequence[BlockIndexTransform | NoBlockIndexTransform]:
+) -> Sequence[BlockIndexTransform | None]:
   in_aval = ctx.avals_in[0]
   if in_aval.shape:
     return [block_transform] * len(ctx.avals_in)
-  return [no_block_index_transform, *[block_transform] * (len(ctx.avals_in) - 1)]
+  return [None, *[block_transform] * (len(ctx.avals_in) - 1)]
 
 
 @register_eval_rule(lax.clamp_p)
@@ -1255,15 +1248,15 @@ def _clamp_eval_rule(
 @register_pull_block_spec_rule(lax.clamp_p)
 def _clamp_pull_block_spec_rule(
     ctx: PullRuleContext, block_transform: BlockIndexTransform,
-) -> Sequence[BlockIndexTransform | NoBlockIndexTransform]:
+) -> Sequence[BlockIndexTransform | None]:
   min_aval, _, max_aval = ctx.avals_in
   assert hasattr(min_aval, 'shape')
   assert hasattr(max_aval, 'shape')
   min_block_transform = (
-      block_transform if min_aval.shape else no_block_index_transform
+      block_transform if min_aval.shape else None
   )
   max_block_transform = (
-      block_transform if max_aval.shape else no_block_index_transform
+      block_transform if max_aval.shape else None
   )
   return [min_block_transform, block_transform, max_block_transform]
 
@@ -1277,13 +1270,13 @@ def _squeeze_eval_rule(ctx: KernelEvalContext, x: jax.Array, **params: Any):
 @register_pull_block_spec_rule(lax.squeeze_p)
 def _squeeze_block_spec(
     ctx: PullRuleContext,
-    block_transform: BlockIndexTransform | NoBlockIndexTransform,
+    block_transform: BlockIndexTransform | None,
     *,
     dimensions: tuple[int, ...],
-) -> Sequence[BlockIndexTransform | NoBlockIndexTransform]:
+) -> Sequence[BlockIndexTransform | None]:
   del ctx
-  if block_transform is no_block_index_transform:
-    return [no_block_index_transform]
+  if block_transform is None:
+    return [None]
 
   def new_block_index_transform(*idxs):
     idx = block_transform.block_index_transform(*idxs)
@@ -1473,9 +1466,6 @@ def _get_clamped_slice_starts(
         )
     )
 
-  assert (
-      ctx.invars is not None
-  ), 'ctx.invars required when scalar_prefetch_fn is None'
   assert all(
       isinstance(v, core.Literal) for v in ctx.invars[start_idx_offset:]
   ), 'All start indices must be static literals if scalar_prefetch_fn is None'
@@ -1558,7 +1548,7 @@ def _dynamic_slice_rule(
   new_block_transform = block_transform.replace(
       block_index_transform=new_block_index_transform,
   )
-  return [new_block_transform] + [no_block_index_transform] * (len(ctx.avals_in) - 1)
+  return [new_block_transform] + [None] * (len(ctx.avals_in) - 1)
 
 
 @register_usage_rule(lax.dynamic_update_slice_p)
@@ -1628,21 +1618,21 @@ def _dynamic_update_slice_rule(
   update_block_transform = block_transform.replace(
       block_index_transform=new_block_index_transform,
   )
-  return [no_block_index_transform, update_block_transform] + [
-      no_block_index_transform
+  return [None, update_block_transform] + [
+      None
   ] * (len(ctx.avals_in) - 2)
 
 
 @register_pull_block_spec_rule(lax.dot_general_p)
 def _dot_general_pull_rule(
     ctx: PullRuleContext,
-    block_transform: BlockIndexTransform | NoBlockIndexTransform,
+    block_transform: BlockIndexTransform | None,
     *,
     dimension_numbers,
     **_,
-) -> Sequence[BlockIndexTransform | NoBlockIndexTransform]:
-  if block_transform is no_block_index_transform:
-    return [no_block_index_transform, no_block_index_transform]
+) -> Sequence[BlockIndexTransform | None]:
+  if block_transform is None:
+    return [None, None]
 
   lhs_aval, rhs_aval = ctx.avals_in
 
@@ -1709,7 +1699,7 @@ def _swap_pull_rule(
 ):
   del kwargs
   # The output and val block spec are the same.
-  return [block_transform, block_transform] + [no_block_index_transform] * (
+  return [block_transform, block_transform] + [None] * (
       len(ctx.avals_in) - 2
   )
 
@@ -1786,7 +1776,7 @@ def _get_pull_rule(
     ctx: PullRuleContext, block_transform: BlockIndexTransform, *, tree
 ):
   if block_transform.block_shape is None:
-    return [block_transform] + [no_block_index_transform] * (
+    return [block_transform] + [None] * (
         len(ctx.avals_in) - 1
     )
   ref_aval = ctx.avals_in[0]
@@ -1856,7 +1846,7 @@ def _get_pull_rule(
       block_index_transform=new_block_index_transform,
   )
   return ([new_block_transform]
-          + [no_block_index_transform] * (len(ctx.avals_in) - 1))
+          + [None] * (len(ctx.avals_in) - 1))
 
 
 @register_eval_rule(state_primitives.get_p)
@@ -2105,15 +2095,15 @@ def _stack_pull_rule(
 @register_pull_block_spec_rule(lax.unstack_p)
 def _unstack_pull_rule(
     ctx: PullRuleContext,
-    out_block_transforms: tuple[BlockIndexTransform | NoBlockIndexTransform, ...],
+    out_block_transforms: tuple[BlockIndexTransform | None, ...],
     *,
     axis: int,
 ):
   valid_transforms = [
-      bt for bt in out_block_transforms if bt is not no_block_index_transform
+      bt for bt in out_block_transforms if bt is not None
   ]
   if not valid_transforms:
-    return [no_block_index_transform]
+    return [None]
 
   block_transform = valid_transforms[0]
   n = len(out_block_transforms)
@@ -2136,7 +2126,7 @@ def _unstack_pull_rule(
 @register_pull_block_spec_rule(lax.split_p)
 def _split_pull_rule(
     ctx: PullRuleContext,
-    out_block_transforms: tuple[BlockIndexTransform | NoBlockIndexTransform, ...],
+    out_block_transforms: tuple[BlockIndexTransform | None, ...],
     *,
     sizes: Sequence[int],
     axis: int,
@@ -2152,7 +2142,7 @@ def _split_pull_rule(
         f'shape {list(aval_in.shape)}.'
     )
   for size, bt in zip(sizes, out_block_transforms, strict=True):
-    if bt is no_block_index_transform:
+    if bt is None:
       continue
     if pallas_core.get_block_size(bt.block_shape[axis]) != size:
       raise NotImplementedError(
@@ -2160,10 +2150,10 @@ def _split_pull_rule(
           f' {bt.block_shape=}, {sizes=}, {axis=}'
       )
   valid_transforms = [
-      bt for bt in out_block_transforms if bt is not no_block_index_transform
+      bt for bt in out_block_transforms if bt is not None
   ]
   if not valid_transforms:
-    return [no_block_index_transform]
+    return [None]
 
   block_transform = valid_transforms[0]
 
@@ -2229,7 +2219,7 @@ def _broadcast_in_dim_pull_rule(
 
   shape = ctx.avals_in[0].shape
   if not shape:
-    return [no_block_index_transform]
+    return [None]
 
   def new_block_index_transform(*idxs):
     idx = block_transform.block_index_transform(*idxs)
@@ -2489,7 +2479,7 @@ def _random_fold_in_pull_rule(
   key_block_transform = BlockIndexTransform(
       block_shape=None, memory_space=pallas_core.MemorySpace.KEY
   )
-  return [key_block_transform, no_block_index_transform]
+  return [key_block_transform, None]
 
 
 @register_eval_rule(lax.iota_p)
@@ -3278,10 +3268,14 @@ def _transpose_push_rule(
     )
 
   def new_index_map(*args):
+    assert block_spec.index_map is not None
     original_idxs = block_spec.index_map(*args)
     return tuple(original_idxs[i] for i in permutation)
 
-  return block_spec.replace(block_shape=new_shape, index_map=new_index_map)
+  return block_spec.replace(
+      block_shape=new_shape,
+      index_map=None if block_spec.index_map is None else new_index_map,
+  )
 
 
 @register_push_block_spec_rule(lax.convert_element_type_p)
@@ -3458,11 +3452,13 @@ def _reshape_push_rule(
     new_block_shape = block_shape[:-1] + (num_last_dim_blocks, last_dim)
 
     def new_index_map(*args):
+      assert block_spec.index_map is not None
       *idx, last = block_spec.index_map(*args)
       return *idx, last, 0
 
     return block_spec.replace(
-        block_shape=new_block_shape, index_map=new_index_map
+        block_shape=new_block_shape,
+        index_map=None if block_spec.index_map is None else new_index_map,
     )
   raise NotImplementedError(f'reshape not supported yet: {aval_in}, {aval_out}')
 
@@ -3490,11 +3486,13 @@ def _reduce_sum_push_rule(
   )
 
   def new_index_map(*args):
+    assert block_spec.index_map is not None
     idx = block_spec.index_map(*args)
     return tuple(idx[i] for i in range(len(idx)) if i not in axes)
 
   return block_spec.replace(
-      block_shape=tuple(new_block_shape), index_map=new_index_map
+      block_shape=tuple(new_block_shape),
+      index_map=None if block_spec.index_map is None else new_index_map,
   )
 
 
@@ -3529,13 +3527,15 @@ def _broadcast_in_dim_push_rule(
       new_block_shape.append(s)
 
   def new_index_map(*args):
+    assert block_spec.index_map is not None
     idx = block_spec.index_map(*args)
     return tuple(
         idx[dim_map[i]] if i in dim_map else 0 for i in range(len(shape))
     )
 
   return block_spec.replace(
-      block_shape=tuple(new_block_shape), index_map=new_index_map
+      block_shape=tuple(new_block_shape),
+      index_map=None if block_spec.index_map is None else new_index_map,
   )
 
 
@@ -3596,9 +3596,9 @@ def _concatenate_push_rule(
 @register_push_block_spec_rule(lax.dynamic_update_slice_p)
 def _dynamic_update_slice_push_rule(
     ctx: PushRuleContext,
-    operand_block_spec: BlockIndexTransform,
-    update_block_spec: BlockIndexTransform,
-    *start_indices: BlockIndexTransform,
+    operand_block_spec: pallas_core.BlockSpec,
+    update_block_spec: pallas_core.BlockSpec,
+    *start_indices: pallas_core.BlockSpec,
     **params,
 ):
   if any(params.values()):
@@ -3666,7 +3666,10 @@ def _stack_push_rule(
   avals_in = ctx.avals_in
   assert all(hasattr(aval_in, 'shape') for aval_in in avals_in)
 
+  block_spec = block_specs[0]
+
   def _new_index_map(*args):
+    assert block_spec.index_map is not None
     all_indices = [block_spec.index_map(*args) for block_spec in block_specs]
     if not all(
         (all_indices[0][i] is all_indices[j][i])
@@ -3681,11 +3684,12 @@ def _stack_push_rule(
     base_indices.insert(axis, 0)
     return tuple(base_indices)
 
-  new_block_shape = list(block_specs[0].block_shape)
+  new_block_shape = list(block_spec.block_shape)
   new_block_shape.insert(axis, len(block_specs))
 
-  return block_specs[0].replace(
-      block_shape=tuple(new_block_shape), index_map=_new_index_map
+  return block_spec.replace(
+      block_shape=tuple(new_block_shape),
+      index_map=None if block_spec.index_map is None else _new_index_map,
   )
 
 
@@ -3709,12 +3713,14 @@ def _unstack_push_rule(
   new_block_shape.pop(axis)
 
   def _new_index_map(*args):
+    assert block_spec.index_map is not None
     idx = list(block_spec.index_map(*args))
     idx.pop(axis)
     return tuple(idx)
 
   out_block_spec = block_spec.replace(
-      block_shape=tuple(new_block_shape), index_map=_new_index_map
+      block_shape=tuple(new_block_shape),
+      index_map=None if block_spec.index_map is None else _new_index_map,
   )
   return [out_block_spec] * n
 
